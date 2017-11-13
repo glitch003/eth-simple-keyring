@@ -10,6 +10,7 @@ class SimpleKeyring extends EventEmitter {
 
   constructor (opts) {
     super()
+    console.log('hi from mobilemask')
     this.type = type
     this.opts = opts || {}
     this.wallets = []
@@ -51,10 +52,50 @@ class SimpleKeyring extends EventEmitter {
 
   // tx is an instance of the ethereumjs-transaction class.
   signTransaction (address, tx) {
-    const wallet = this._getWalletForAccount(address)
-    var privKey = wallet.getPrivateKey()
-    tx.sign(privKey)
-    return Promise.resolve(tx)
+    console.log('signing transaction for address: ' + address)
+    console.log(tx)
+    // original implementation:
+    // const wallet = this._getWalletForAccount(address)
+    // var privKey = wallet.getPrivateKey()
+    // tx.sign(privKey)
+    // return Promise.resolve(tx)
+
+    return new Promise((resolve, reject) => {
+      let wsUri = "ws://localhost:3000/cable"
+      let websocket = new WebSocket(wsUri);
+      websocket.onopen = (evt) => { 
+        console.log(evt)
+        console.log("CONNECTED")
+        let identifier = {
+          channel: "MessagesChannel",
+          user_id: 'de:ad:be:ef:ab:cd'
+        }
+        let msg = {
+          command: "subscribe",
+          identifier: JSON.stringify(identifier)
+        }
+        websocket.send(JSON.stringify(msg));
+      }
+      websocket.onclose = (evt) => { console.log(evt) }
+      websocket.onerror = (evt) => { console.log(evt) }
+      websocket.onmessage = (evt) => { 
+        console.log(evt)
+        let data = JSON.parse(evt.data);
+        if (data.message && data.message.signed_tx) {
+          console.log('signed tx is included')
+          websocket.close()
+          const wallet = this._getWalletForAccount(address)
+          var privKey = wallet.getPrivateKey()
+          tx.sign(privKey)
+          console.log('signed tx: ')
+          console.log(tx)
+          resolve(tx)
+        }
+      }
+    })
+
+
+
   }
 
   // For eth_sign, we need to sign arbitrary data:
