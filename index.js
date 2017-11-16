@@ -3,6 +3,7 @@ const Wallet = require('ethereumjs-wallet')
 const ethUtil = require('ethereumjs-util')
 const type = 'Simple Key Pair'
 const sigUtil = require('eth-sig-util')
+const Transaction = require('ethereumjs-tx')
 
 class SimpleKeyring extends EventEmitter {
 
@@ -14,40 +15,73 @@ class SimpleKeyring extends EventEmitter {
     this.type = type
     this.opts = opts || {}
     this.wallets = []
+    // localhost
+    this.sdkdConfig = {
+      sdkdHost: 'http://localhost:3000',
+      sdkdWsHost: 'ws://localhost:3000',
+      apiKey: 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhcGlfY2xpZW50X2lkIjoiNGVkNTNiYTAtNTRjYy00M2QwLTk4MDgtZGZiMTY2ZDhhMmI4IiwiY3JlYXRlZF9hdCI6MTUwNzIzNjQ4OH0.z4_h_4iTCYyv0OMCqe6RE0XEvM_DIagTR3lfRbQt74w',
+      currentUserKey: 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoiYWU5YjhmYzgtMDJkNi00ZWZlLWI5NTYtMmM1OGQ4MjUzNDBlIiwiY3JlYXRlZF9hdCI6MTUxMDcxMjEzOX0.NHu2CIGuVVZWOIWbOAPQVnzT3arJmt0JdFBgKaS5phc',
+      userId: 'ae9b8fc8-02d6-4efe-b956-2c58d825340e'
+    }
   }
 
   serialize () {
     return Promise.resolve(this.wallets.map(w => w.getPrivateKey().toString('hex')))
   }
 
-  deserialize (privateKeys = []) {
+  // deserialize (privateKeys = []) {
+  //   return new Promise((resolve, reject) => {
+  //     try {
+  //       this.wallets = privateKeys.map((privateKey) => {
+  //         const stripped = ethUtil.stripHexPrefix(privateKey)
+  //         const buffer = new Buffer(stripped, 'hex')
+  //         const wallet = Wallet.fromPrivateKey(buffer)
+  //         return wallet
+  //       })
+  //     } catch (e) {
+  //       reject(e)
+  //     }
+  //     resolve()
+  //   })
+  // }
+
+  deserialize () {
+    // get from server
     return new Promise((resolve, reject) => {
-      try {
-        this.wallets = privateKeys.map((privateKey) => {
-          const stripped = ethUtil.stripHexPrefix(privateKey)
-          const buffer = new Buffer(stripped, 'hex')
-          const wallet = Wallet.fromPrivateKey(buffer)
-          return wallet
-        })
-      } catch (e) {
-        reject(e)
-      }
-      resolve()
+      fetch(this.sdkdConfig.sdkdHost + '/user_key_parts', {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'X-SDKD-API-Client-Key': this.sdkdConfig.apiKey,
+          'X-SDKD-User-Key': this.sdkdConfig.currentUserKey
+        }
+      })
+      .then(response => response.json())
+      .then(response => {
+        // response is an array of hex encoded eth addresse that belong to the user
+        this.wallets = response
+        resolve()
+      })
     })
   }
 
-  addAccounts (n = 1) {
-    var newWallets = []
-    for (var i = 0; i < n; i++) {
-      newWallets.push(Wallet.generate())
-    }
-    this.wallets = this.wallets.concat(newWallets)
-    const hexWallets = newWallets.map(w => ethUtil.bufferToHex(w.getAddress()))
-    return Promise.resolve(hexWallets)
+  // addAccounts (n = 1) {
+  //   var newWallets = []
+  //   for (var i = 0; i < n; i++) {
+  //     newWallets.push(Wallet.generate())
+  //   }
+  //   this.wallets = this.wallets.concat(newWallets)
+  //   const hexWallets = newWallets.map(w => ethUtil.bufferToHex(w.getAddress()))
+  //   return Promise.resolve(hexWallets)
+  // }
+
+  addAccounts () {
+    console.log('called add accounts.  uhhhh')
   }
 
   getAccounts () {
-    return Promise.resolve(this.wallets.map(w => ethUtil.bufferToHex(w.getAddress())))
+    return Promise.resolve(this.wallets)
   }
 
   // tx is an instance of the ethereumjs-transaction class.
@@ -61,41 +95,54 @@ class SimpleKeyring extends EventEmitter {
     // return Promise.resolve(tx)
 
     return new Promise((resolve, reject) => {
-      let wsUri = "ws://localhost:3000/cable"
-      let websocket = new WebSocket(wsUri);
-      websocket.onopen = (evt) => { 
+      let wsUri = this.sdkdConfig.sdkdWsHost + '/cable'
+      let websocket = new WebSocket(wsUri)
+      websocket.onopen = (evt) => {
         console.log(evt)
         console.log("CONNECTED")
+
+        // subscribe
         let identifier = {
           channel: "MessagesChannel",
-          user_id: 'de:ad:be:ef:ab:cd'
+          user_id: this.sdkdConfig.userId
         }
         let msg = {
           command: "subscribe",
           identifier: JSON.stringify(identifier)
         }
-        websocket.send(JSON.stringify(msg));
+        websocket.send(JSON.stringify(msg))
+
+        // send txn
+        let data = {
+          action: 'create_tx',
+          tx_params: tx
+        }
+        msg = {
+          command: "message",
+          identifier: JSON.stringify(identifier),
+          data: JSON.stringify(data)
+        }
+        websocket.send(JSON.stringify(msg))
       }
       websocket.onclose = (evt) => { console.log(evt) }
       websocket.onerror = (evt) => { console.log(evt) }
-      websocket.onmessage = (evt) => { 
+      websocket.onmessage = (evt) => {
+        let data = JSON.parse(evt.data)
+        if (data.type == 'ping') {
+          return // don't print pings
+        }
         console.log(evt)
-        let data = JSON.parse(evt.data);
-        if (data.message && data.message.signed_tx) {
+        if (data.message && data.message.tx) {
           console.log('signed tx is included')
           websocket.close()
-          const wallet = this._getWalletForAccount(address)
-          var privKey = wallet.getPrivateKey()
-          tx.sign(privKey)
+          let signedTx = data.message.tx
+          tx = new Transaction(signedTx.signed_tx)
           console.log('signed tx: ')
-          console.log(tx)
+          console.log(JSON.stringify(tx))
           resolve(tx)
         }
       }
     })
-
-
-
   }
 
   // For eth_sign, we need to sign arbitrary data:
