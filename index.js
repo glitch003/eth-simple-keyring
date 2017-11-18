@@ -23,10 +23,14 @@ class SimpleKeyring extends EventEmitter {
       currentUserKey: 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoiYWU5YjhmYzgtMDJkNi00ZWZlLWI5NTYtMmM1OGQ4MjUzNDBlIiwiY3JlYXRlZF9hdCI6MTUxMDcxMjEzOX0.NHu2CIGuVVZWOIWbOAPQVnzT3arJmt0JdFBgKaS5phc',
       userId: 'ae9b8fc8-02d6-4efe-b956-2c58d825340e'
     }
+
+
+    console.log('sdkd config is: ' + JSON.stringify(this.sdkdConfig))
   }
 
   serialize () {
-    return Promise.resolve(this.wallets.map(w => w.getPrivateKey().toString('hex')))
+    console.log('serialize')
+    // return Promise.resolve(this.wallets.map(w => w.getPrivateKey().toString('hex')))
   }
 
   // deserialize (privateKeys = []) {
@@ -46,6 +50,7 @@ class SimpleKeyring extends EventEmitter {
   // }
 
   deserialize () {
+    console.log('deserialize')
     // get from server
     return new Promise((resolve, reject) => {
       fetch(this.sdkdConfig.sdkdHost + '/user_key_parts', {
@@ -61,7 +66,7 @@ class SimpleKeyring extends EventEmitter {
       .then(response => {
         // response is an array of hex encoded eth addresse that belong to the user
         this.wallets = response
-        resolve()
+        resolve(this.wallets)
       })
     })
   }
@@ -78,16 +83,18 @@ class SimpleKeyring extends EventEmitter {
 
   addAccounts () {
     console.log('called add accounts.  uhhhh')
+    return this.deserialize()
   }
 
   getAccounts () {
+    console.log('get accounts')
     return Promise.resolve(this.wallets)
   }
 
   // tx is an instance of the ethereumjs-transaction class.
   signTransaction (address, tx) {
     console.log('signing transaction for address: ' + address)
-    console.log(tx)
+    console.log(JSON.stringify(tx))
     // original implementation:
     // const wallet = this._getWalletForAccount(address)
     // var privKey = wallet.getPrivateKey()
@@ -97,30 +104,19 @@ class SimpleKeyring extends EventEmitter {
     return new Promise((resolve, reject) => {
       let wsUri = this.sdkdConfig.sdkdWsHost + '/cable'
       let websocket = new WebSocket(wsUri)
+      let ts = Date.now()
+      let identifier = {
+        channel: "MessagesChannel",
+        user_id: this.sdkdConfig.userId
+      }
       websocket.onopen = (evt) => {
         console.log(evt)
         console.log("CONNECTED")
 
         // subscribe
-        let identifier = {
-          channel: "MessagesChannel",
-          user_id: this.sdkdConfig.userId
-        }
         let msg = {
           command: "subscribe",
           identifier: JSON.stringify(identifier)
-        }
-        websocket.send(JSON.stringify(msg))
-
-        // send txn
-        let data = {
-          action: 'create_tx',
-          tx_params: tx
-        }
-        msg = {
-          command: "message",
-          identifier: JSON.stringify(identifier),
-          data: JSON.stringify(data)
         }
         websocket.send(JSON.stringify(msg))
       }
@@ -132,14 +128,39 @@ class SimpleKeyring extends EventEmitter {
           return // don't print pings
         }
         console.log(evt)
-        if (data.message && data.message.tx) {
+        // if subscription confirmation, then send signing request
+        if (data.type === 'confirm_subscription') {
+          // send txn
+          let data = {
+            action: 'create_tx',
+            tx_params: tx,
+            request_ts: ts
+          }
+          let msg = {
+            command: 'message',
+            identifier: JSON.stringify(identifier),
+            data: JSON.stringify(data)
+          }
+          websocket.send(JSON.stringify(msg))
+          return
+        }
+
+        if (!data.message) {
+          return
+        }
+
+        let signedTx = data.message.tx
+
+        if (signedTx !== undefined && signedTx.status === 'signed' && signedTx.request_ts === ts.toString()) {
           console.log('signed tx is included')
-          websocket.close()
           let signedTx = data.message.tx
-          tx = new Transaction(signedTx.signed_tx)
-          console.log('signed tx: ')
-          console.log(JSON.stringify(tx))
-          resolve(tx)
+          let newTx = new Transaction(signedTx.signed_tx)
+          // make sure the parsed unserialized tx has the same "to" and "value"
+          if (tx.to.toString('hex') === newTx.to.toString('hex') && tx.value.toString('hex') === newTx.value.toString('hex')) {
+            console.log('tx matches, resolving promise and closing websocket')
+            websocket.close()
+            resolve(newTx)
+          }
         }
       }
     })
@@ -174,8 +195,9 @@ class SimpleKeyring extends EventEmitter {
 
   // exportAccount should return a hex-encoded private key:
   exportAccount (address) {
-    const wallet = this._getWalletForAccount(address)
-    return Promise.resolve(wallet.getPrivateKey().toString('hex'))
+    return null // disabled
+    // const wallet = this._getWalletForAccount(address)
+    // return Promise.resolve(wallet.getPrivateKey().toString('hex'))
   }
 
 
@@ -183,7 +205,7 @@ class SimpleKeyring extends EventEmitter {
 
   _getWalletForAccount (account) {
     const address = sigUtil.normalize(account)
-    let wallet = this.wallets.find(w => ethUtil.bufferToHex(w.getAddress()) === address)
+    let wallet = this.wallets.find(w => w === address)
     if (!wallet) throw new Error('Simple Keyring - Unable to find matching address.')
     return wallet
   }
